@@ -1,4 +1,5 @@
 const webpack = require('webpack');
+const path = require('path');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -15,6 +16,7 @@ const nextConfig = {
     config.plugins.push(
       new webpack.ProvidePlugin({
         process: 'process/browser',
+        Buffer: ['buffer', 'Buffer'],
       })
     );
     
@@ -30,12 +32,15 @@ const nextConfig = {
       https: require.resolve('https-browserify'),
       zlib: require.resolve('browserify-zlib'),
       process: require.resolve('process/browser'),
+      buffer: require.resolve('buffer')
     };
     
     // Enable module path aliases from tsconfig.json
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@': require('path').resolve(__dirname, 'src')
+      '@': path.resolve(__dirname, 'src'),
+      // Replace @solana/web3.js with our mock
+      '@solana/web3.js': path.resolve(__dirname, 'src/mocks/web3.js')
     };
     
     return config;
