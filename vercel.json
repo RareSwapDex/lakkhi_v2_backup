@@ -1,0 +1,13 @@
+{
+  "name": "lakkhi-v2",
+  "framework": "nextjs",
+  "buildCommand": "npm run vercel-build",
+  "outputDirectory": ".next",
+  "env": {
+    "NEXT_PUBLIC_SOLANA_NETWORK": "devnet",
+    "NEXT_PUBLIC_RPC_URL": "https://api.devnet.solana.com",
+    "NEXT_PUBLIC_LAKKHI_TOKEN_ADDRESS": "6pABjANnUTSyymBeXHKQBgAsu6BkDoCLh9rbj9WFNTAS",
+    "NEXT_PUBLIC_LAKKHI_TOKEN_MINT": "6pABjANnUTSyymBeXHKQBgAsu6BkDoCLh9rbj9WFNTAS",
+    "NEXT_PUBLIC_PROGRAM_ID": "327a4qt63MvYnjR3q67yFS8p4YyBunMBFpKLhwhrVSAm"
+  }
+} 
