@@ -9,6 +9,7 @@
     "build": "next build",
     "export": "next build && next export",
     "vercel-build": "node vercel-build.js && next build",
+    "netlify-build": "node netlify-build.js && next build",
     "start": "next start",
     "lint": "next lint"
   },
@@ -42,6 +43,7 @@
     "react-hot-toast": "^2.4.0"
   },
   "devDependencies": {
+    "@netlify/plugin-nextjs": "^4.41.3",
     "@types/bn.js": "^5.1.1",
     "@types/node": "^18.15.12",
     "@types/react": "^18.0.37",
