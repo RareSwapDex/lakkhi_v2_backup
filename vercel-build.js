@@ -184,6 +184,9 @@ function createBuffer(data) {
   return Buffer.from(data || []);
 }
 
+// Define clusterApiUrl function
+const clusterApiUrl = (cluster) => \`https://api.\${cluster || 'devnet'}.solana.com\`;
+
 // PublicKey implementation
 class PublicKey {
   constructor(value) {
@@ -283,7 +286,30 @@ const SystemProgram = {
   })
 };
 
-// Export everything
+// Commitment enum
+const Commitment = { 
+  confirmed: 'confirmed', 
+  finalized: 'finalized',
+  processed: 'processed'
+};
+
+// ES Module exports for TypeScript
+export {
+  PublicKey,
+  Transaction,
+  Connection,
+  Keypair,
+  Message,
+  VersionedMessage,
+  VersionedTransaction,
+  SIGNATURE_LENGTH_IN_BYTES,
+  LAMPORTS_PER_SOL,
+  SystemProgram,
+  clusterApiUrl,
+  Commitment
+};
+
+// CommonJS exports for Node.js
 module.exports = {
   PublicKey,
   Transaction,
@@ -295,9 +321,8 @@ module.exports = {
   SIGNATURE_LENGTH_IN_BYTES,
   LAMPORTS_PER_SOL,
   SystemProgram,
-  // Add any additional exports that might be needed
-  clusterApiUrl: (cluster) => \`https://api.\${cluster || 'devnet'}.solana.com\`,
-  Commitment: { confirmed: 'confirmed', finalized: 'finalized' }
+  clusterApiUrl,
+  Commitment
 };`;
 
 fs.writeFileSync(web3MockPath, web3MockContent);
