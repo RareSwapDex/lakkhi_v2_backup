@@ -1,0 +1,683 @@
+import { Program, AnchorProvider, web3, BN, Idl } from '@project-serum/anchor';
+import { clusterApiUrl, Connection, PublicKey, Keypair, SystemProgram, Transaction, LAMPORTS_PER_SOL, sendAndConfirmTransaction } from '@solana/web3.js';
+import { solToUSD } from '@/services/price-service';
+import idl from './idl.json';
+import { TOKEN_PROGRAM_ID, getOrCreateAssociatedTokenAccount, createAssociatedTokenAccountInstruction, getAssociatedTokenAddress, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { useAnchorWallet, useWallet } from '@solana/wallet-adapter-react';
+import { useState, useEffect, useMemo } from 'react';
+import toast from 'react-hot-toast';
+import * as anchor from '@coral-xyz/anchor';
+import { useConnection } from '@solana/wallet-adapter-react';
+
+// Program ID for the app - update with your actual program ID
+const programId = new PublicKey("327a4qt63MvYnjR3q67yFS8p4YyBunMBFpKLhwhrVSAm");
+
+// Network configuration
+const network = clusterApiUrl('devnet');
+const opts = {
+  preflightCommitment: 'processed' as web3.ConfirmOptions,
+};
+
+// Get provider
+export const getProvider = () => {
+  if (typeof window === 'undefined') {
+    // For server-side
+    const connection = new Connection(network, opts.preflightCommitment);
+    const provider = new AnchorProvider(
+      connection,
+      {} as any,
+      opts as any
+    );
+    return provider;
+  }
+
+  // For client-side
+  const connection = new Connection(network, opts.preflightCommitment);
+  
+  // @ts-ignore
+  const provider = new AnchorProvider(
+    connection,
+    window.solana,
+    opts as any
+  );
+  return provider;
+};
+
+// Get program
+export const getProgram = () => {
+  const provider = getProvider();
+  // @ts-ignore
+  return new Program(idl, programId, provider);
+};
+
+// Create a campaign
+export const createCampaign = async (
+  name: string,
+  description: string,
+  targetAmount: number, // in USD (will be converted to LAKKHI)
+  endDate: Date,
+  imageUrl: string,
+  category: string,
+  wallet: any // Accept wallet as a parameter instead of using hook
+) => {
+  // Cannot use useConnection hook here because this is not a component
+  // Use direct connection instead
+  const connection = new Connection(network, opts.preflightCommitment);
+  
+  if (!wallet || !wallet.publicKey) {
+    throw new Error('Wallet not connected');
+  }
+
+  console.log('Creating campaign with parameters:', {
+    name,
+    description,
+    targetAmount,
+    endDate: endDate.toISOString(),
+    imageUrl,
+    category,
+    wallet: wallet.publicKey.toString()
+  });
+
+  // Create the provider
+  const provider = new AnchorProvider(
+    connection, 
+    wallet,
+    { preflightCommitment: 'processed' } as any
+  );
+
+  console.log('Provider created');
+
+  // Create the program with parsed IDL
+  const idlCopy = JSON.parse(JSON.stringify(idl));
+  console.log('IDL parsed');
+  
+  // Log program ID for debugging
+  console.log('Using program ID:', programId.toString());
+  
+  const program = new Program(
+    idlCopy as any,
+    programId,
+    provider
+  );
+
+  console.log('Program created');
+
+  // Generate a new campaign account keypair
+  const campaignAccount = web3.Keypair.generate();
+  console.log('Campaign account generated:', campaignAccount.publicKey.toString());
+
+  // Convert amount to LAKKHI tokens (assuming 1 LAKKHI = 1 USD for simplicity)
+  // In a real app, you would use an oracle or price feed
+  const targetAmountLamports = new BN(targetAmount * Math.pow(10, 9)); // 9 decimals for tokens
+  console.log('Target amount in tokens:', targetAmountLamports.toString());
+  
+  // Convert date to Unix timestamp (seconds)
+  const endTimestamp = new BN(Math.floor(endDate.getTime() / 1000));
+  console.log('End timestamp:', endTimestamp.toString());
+
+  try {
+    console.log('Calling create_campaign instruction with accounts:', {
+      campaign: campaignAccount.publicKey.toString(),
+      creator: wallet.publicKey.toString(),
+      systemProgram: SystemProgram.programId.toString()
+    });
+    
+    // Call the create_campaign instruction
+    await program.methods
+      .createCampaign(
+        name,
+        description,
+        category,
+        targetAmountLamports,
+        endTimestamp,
+        imageUrl
+      )
+      .accounts({
+        campaign: campaignAccount.publicKey,
+        creator: wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([campaignAccount])
+      .rpc();
+
+    console.log('Campaign creation successful');
+    return campaignAccount.publicKey.toString();
+  } catch (error) {
+    console.error('Detailed error creating campaign:', error);
+    // Provide a more specific error message if possible
+    if (error instanceof Error) {
+      console.error('Error stack:', error.stack);
+      if (error.message.includes('0x1771')) {
+        throw new Error('Campaign creation failed - insufficient funds for transaction');
+      } else if (error.message.includes('custom program error')) {
+        throw new Error('Campaign creation failed - program error. Check parameters and try again.');
+      }
+    }
+    throw error;
+  }
+};
+
+// Update the LAKKHI token mint constant to use a different address
+export const LAKKHI_TOKEN_MINT = new PublicKey("EYGgx5fYCZtLN2pvnR4Bhn5KpMffKwyHCms4VhjSvF2K");
+
+// Donate to a campaign using LAKKHI tokens
+export const donateToCampaign = async (
+  campaignAddress: string,
+  amount: number // amount in LAKKHI tokens
+): Promise<string> => {
+  try {
+    const { connection } = useConnection();
+    const wallet = useAnchorWallet();
+    
+    if (!wallet) {
+      throw new Error('Wallet not connected');
+    }
+    
+    // Create the provider and program
+    const provider = new AnchorProvider(
+      connection,
+      wallet,
+      { preflightCommitment: 'processed' } as any
+    );
+    
+    const program = new Program(idl as unknown as Idl, programId, provider);
+    
+    // Convert campaign address to PublicKey
+    const campaignPubkey = new PublicKey(campaignAddress);
+    
+    // Find platform state PDA
+    const [platformState] = await PublicKey.findProgramAddress(
+      [Buffer.from('platform-state')],
+      program.programId
+    );
+    
+    // Convert amount to LAKKHI token units (assuming 9 decimals)
+    const amountBN = new BN(amount * Math.pow(10, 9)); // 9 decimals for SPL tokens
+    
+    // Find donor token account for LAKKHI
+    const donorTokenAccount = await findTokenAccount(connection, wallet.publicKey, LAKKHI_TOKEN_MINT);
+    
+    if (!donorTokenAccount) {
+      throw new Error('No LAKKHI token account found for the donor. Please acquire LAKKHI tokens first.');
+    }
+    
+    // Find campaign token account for LAKKHI
+    // In a real implementation, you would create a PDA for the campaign token account
+    const [campaignAuthority] = await PublicKey.findProgramAddress(
+      [Buffer.from('campaign-auth'), campaignPubkey.toBuffer()],
+      program.programId
+    );
+    
+    const campaignTokenAccount = await findTokenAccount(connection, campaignAuthority, LAKKHI_TOKEN_MINT);
+    
+    if (!campaignTokenAccount) {
+      throw new Error('No LAKKHI token account found for the campaign. Please contact the platform admin.');
+    }
+    
+    // Call the donateTokens instruction
+    const signature = await program.methods
+      .donateTokens(amountBN)
+      .accounts({
+        campaign: campaignPubkey,
+        donor: wallet.publicKey,
+        donorTokenAccount,
+        campaignTokenAccount,
+        platformState,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    
+    console.log(`Transaction signature: ${signature}`);
+    return signature;
+  } catch (error) {
+    console.error('Error donating to campaign:', error);
+    throw error;
+  }
+};
+
+// Fetch all campaigns
+export const fetchAllCampaigns = async () => {
+  const program = getProgram();
+
+  try {
+    const accounts = await program.account.campaign.all();
+    return accounts.map(({ account, publicKey }) => {
+      // Get SOL amounts
+      const amountDonatedSOL = (account as any).currentAmount.toNumber() / web3.LAMPORTS_PER_SOL;
+      const targetAmountSOL = (account as any).targetAmount.toNumber() / web3.LAMPORTS_PER_SOL;
+      
+      return {
+        pubkey: publicKey.toString(),
+        creator: (account as any).creator.toString(),
+        name: (account as any).name,
+        description: (account as any).description,
+        amountDonated: amountDonatedSOL,
+        targetAmount: targetAmountSOL,
+        endDate: new Date((account as any).endDate.toNumber() * 1000),
+        imageUrl: (account as any).imageUrl || "https://via.placeholder.com/600x400?text=Campaign",
+        active: (account as any).isActive,
+        fundingComplete: amountDonatedSOL >= targetAmountSOL,
+      };
+    });
+  } catch (error) {
+    console.error('Error fetching all campaigns:', error);
+    return [];
+  }
+};
+
+export interface Campaign {
+  pubkey: PublicKey;
+  creator: PublicKey;
+  name: string;
+  description: string;
+  imageUrl: string;
+  category: string;
+  targetAmount: BN;
+  currentAmount: BN;
+  endDate: Date;
+  isActive: boolean;
+  donorsCount: BN;
+  updatesCount: BN;
+  fundsReleased?: boolean;
+  campaignId?: BN;
+}
+
+export interface CampaignUpdate {
+  pubkey: PublicKey;
+  campaign: PublicKey;
+  title: string;
+  content: string;
+  timestamp: Date;
+  updateId: BN;
+}
+
+export interface Donation {
+  pubkey: string;
+  campaignPubkey: string;
+  donor: string;
+  amount: BN;
+  timestamp: Date;
+}
+
+export const fetchCampaigns = async (program: Program): Promise<Campaign[]> => {
+  try {
+    if (!program) throw new Error('Program not initialized');
+    
+    const campaigns = await program.account.campaign.all();
+    
+    return campaigns.map(({ account, publicKey }) => ({
+      pubkey: publicKey,
+      name: (account as any).name,
+      description: (account as any).description,
+      imageUrl: (account as any).imageUrl,
+      category: (account as any).category,
+      creator: (account as any).creator,
+      targetAmount: (account as any).targetAmount,
+      currentAmount: (account as any).currentAmount,
+      endDate: new Date((account as any).endDate.toNumber() * 1000),
+      isActive: (account as any).isActive,
+      donorsCount: (account as any).donorsCount,
+      updatesCount: (account as any).updatesCount
+    }));
+  } catch (error) {
+    console.error('Error fetching campaigns:', error);
+    throw error;
+  }
+};
+
+export const fetchCampaign = async (program: Program, campaignPubkey: PublicKey): Promise<Campaign> => {
+  try {
+    if (!program) throw new Error('Program not initialized');
+    
+    const account = await program.account.campaign.fetch(campaignPubkey);
+    
+    return {
+      pubkey: campaignPubkey,
+      name: (account as any).name,
+      description: (account as any).description,
+      imageUrl: (account as any).imageUrl,
+      category: (account as any).category,
+      creator: (account as any).creator,
+      targetAmount: (account as any).targetAmount,
+      currentAmount: (account as any).currentAmount,
+      endDate: new Date((account as any).endDate.toNumber() * 1000),
+      isActive: (account as any).isActive,
+      donorsCount: (account as any).donorsCount,
+      updatesCount: (account as any).updatesCount
+    };
+  } catch (error) {
+    console.error('Error fetching campaign:', error);
+    throw error;
+  }
+};
+
+export const donateTokens = async (
+  program: Program,
+  wallet: any,
+  campaignPubkey: PublicKey,
+  amount: number
+): Promise<string> => {
+  try {
+    if (!program || !wallet.publicKey) throw new Error('Program not initialized');
+    
+    // Convert amount to lamports-equivalent (for token precision)
+    const amountBN = new BN(amount * (10 ** 9)); // Assuming 9 decimals like SOL
+    
+    // Get the campaign account
+    const campaign = await program.account.campaign.fetch(campaignPubkey);
+    
+    // Get the donor's token account
+    const donorTokenAccount = await getAssociatedTokenAddress(
+      LAKKHI_TOKEN_MINT,
+      wallet.publicKey
+    );
+    
+    // Get the campaign token account
+    const campaignTokenAccount = await getAssociatedTokenAddress(
+      LAKKHI_TOKEN_MINT,
+      campaignPubkey,
+      true // allowOwnerOffCurve
+    );
+    
+    // Donate tokens instruction
+    const tx = await program.methods
+      .donateTokens(amountBN)
+      .accounts({
+        campaign: campaignPubkey,
+        donor: wallet.publicKey,
+        tokenMint: LAKKHI_TOKEN_MINT,
+        donorTokenAccount: donorTokenAccount,
+        campaignTokenAccount: campaignTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .transaction();
+    
+    // Sign and send transaction
+    const signature = await wallet.sendTransaction(tx, program.provider.connection);
+    
+    await program.provider.connection.confirmTransaction(signature, 'confirmed');
+    
+    return signature;
+  } catch (error) {
+    console.error('Error donating tokens:', error);
+    throw error;
+  }
+};
+
+export const addCampaignUpdate = async (
+  campaignPubkey: string,
+  title: string,
+  content: string
+): Promise<string> => {
+  try {
+    const { program } = useAnchorClient();
+    const wallet = useAnchorWallet();
+    
+    if (!program || !wallet) {
+      throw new Error('Program not initialized or wallet not connected');
+    }
+    
+    const campaignPublicKey = new PublicKey(campaignPubkey);
+    
+    // Create a new keypair for the update
+    const updateKeypair = Keypair.generate();
+    
+    // Add campaign update instruction
+    const tx = await program.methods
+      .addCampaignUpdate(title, content)
+      .accounts({
+        campaign: campaignPublicKey,
+        update: updateKeypair.publicKey,
+        creator: wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([updateKeypair])
+      .rpc();
+    
+    return updateKeypair.publicKey.toString();
+  } catch (error) {
+    console.error('Error adding campaign update:', error);
+    throw error;
+  }
+};
+
+export const fetchCampaignUpdates = async (campaignPubkey: string): Promise<CampaignUpdate[]> => {
+  try {
+    const { program } = useAnchorClient();
+    
+    if (!program) {
+      throw new Error('Program not initialized');
+    }
+    
+    const campaignPublicKey = new PublicKey(campaignPubkey);
+    
+    // Fetch all updates for this campaign
+    const updates = await program.account.campaignUpdate.all([
+      {
+        memcmp: {
+          offset: 8, // After the discriminator
+          bytes: campaignPublicKey.toBase58(),
+        },
+      },
+    ]);
+    
+    return updates.map(({ account, publicKey }) => ({
+      pubkey: publicKey,
+      campaign: (account as any).campaign,
+      title: (account as any).title,
+      content: (account as any).content,
+      timestamp: new Date((account as any).timestamp.toNumber() * 1000),
+      updateId: (account as any).updateId,
+    }));
+  } catch (error) {
+    console.error('Error fetching campaign updates:', error);
+    throw error;
+  }
+};
+
+export const releaseFunds = async (campaignPubkey: string): Promise<string> => {
+  try {
+    const { connection } = useConnection();
+    const wallet = useAnchorWallet();
+    
+    if (!wallet) {
+      throw new Error('Wallet not connected');
+    }
+    
+    // Create the provider and program
+    const provider = new AnchorProvider(
+      connection,
+      wallet,
+      { preflightCommitment: 'processed' } as any
+    );
+    
+    const program = new Program(idl as unknown as Idl, programId, provider);
+    
+    // Convert campaign address to PublicKey
+    const campaignPubkeyObj = new PublicKey(campaignPubkey);
+    
+    // Call the release_funds instruction
+    const signature = await program.methods
+      .releaseFunds()
+      .accounts({
+        campaign: campaignPubkeyObj,
+        authority: wallet.publicKey,
+        recipient: wallet.publicKey,
+        platformState: await PublicKey.findProgramAddress(
+          [Buffer.from("platform-state")],
+          program.programId
+        ).then(([address]) => address),
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    
+    return signature;
+  } catch (error) {
+    console.error('Error releasing funds:', error);
+    throw error;
+  }
+};
+
+export const useCampaign = (campaignId: string | undefined) => {
+  const { program, loading: clientLoading } = useAnchorClient();
+  const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const loadCampaign = async () => {
+      if (!program || !campaignId) return;
+      
+      try {
+        setLoading(true);
+        const campaignPubkey = new PublicKey(campaignId);
+        const campaignData = await fetchCampaign(program, campaignPubkey);
+        setCampaign(campaignData);
+        setError(null);
+      } catch (err) {
+        console.error('Error loading campaign:', err);
+        setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (!clientLoading && program && campaignId) {
+      loadCampaign();
+    }
+  }, [program, campaignId, clientLoading]);
+
+  return { campaign, loading: loading || clientLoading, error };
+};
+
+// Helper function to find a token account
+async function findTokenAccount(
+  connection: Connection,
+  owner: PublicKey,
+  mint: PublicKey
+): Promise<PublicKey | null> {
+  // This is a simplification - in a real app, you might use getParsedTokenAccountsByOwner
+  const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+    owner,
+    { mint }
+  );
+  
+  if (tokenAccounts.value.length > 0) {
+    return tokenAccounts.value[0].pubkey;
+  }
+  
+  return null;
+}
+
+// Create a custom hook to get the Anchor program instance
+export function useAnchorClient() {
+  const { connection } = useConnection();
+  const wallet = useAnchorWallet();
+  const [program, setProgram] = useState<Program | null>(null);
+  const [platformState, setPlatformState] = useState<PublicKey | null>(null);
+  const [lakkhiMint, setLakkhiMint] = useState<PublicKey | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (wallet) {
+      try {
+        setLoading(true);
+        // Create the provider
+        const provider = new AnchorProvider(
+          connection,
+          wallet,
+          { preflightCommitment: 'processed' } as any
+        );
+        
+        // Convert IDL for compatibility
+        const idlCopy = JSON.parse(JSON.stringify(idl));
+        
+        // Create the program
+        const program = new Program(
+          idlCopy as any,
+          programId,
+          provider
+        );
+        
+        setProgram(program as any);
+
+        // Find platform state PDA
+        const findPlatformState = async () => {
+          try {
+            const [pda] = await PublicKey.findProgramAddress(
+              [Buffer.from('platform-state')],
+              programId
+            );
+            setPlatformState(pda);
+
+            try {
+              // Get the platform state to find the LAKKHI mint
+              // Try-catch in case the account doesn't exist yet
+              // Use a safer approach to check if the account and properties exist
+              if (program.account && typeof program.account.platformState?.fetch === 'function') {
+                try {
+                  const platformStateAccount = await program.account.platformState.fetch(pda);
+                  if (platformStateAccount && (platformStateAccount as any).lakkhiMint) {
+                    setLakkhiMint((platformStateAccount as any).lakkhiMint);
+                  }
+                } catch (fetchErr: any) {
+                  console.log('Platform state account not found or not initialized yet:', fetchErr.message || String(fetchErr));
+                }
+              } else {
+                console.log('platformState account type not defined in program interface');
+              }
+            } catch (error) {
+              console.error('Error accessing platform state:', error);
+            }
+            setLoading(false);
+          } catch (err) {
+            console.error('Error finding program address:', err);
+            setLoading(false);
+          }
+        };
+
+        findPlatformState();
+      } catch (err) {
+        console.error('Error initializing Anchor client:', err);
+        setLoading(false);
+      }
+    } else {
+      setLoading(false);
+    }
+  }, [connection, wallet]);
+
+  return { program, platformState, lakkhiMint, loading };
+}
+
+// Create a custom hook to get all campaigns
+export const useCampaigns = () => {
+  const { program, loading: clientLoading } = useAnchorClient();
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const loadCampaigns = async () => {
+      if (!program) return;
+      
+      try {
+        setLoading(true);
+        const campaignsData = await fetchCampaigns(program);
+        setCampaigns(campaignsData);
+        setError(null);
+      } catch (err) {
+        console.error('Error loading campaigns:', err);
+        setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (!clientLoading && program) {
+      loadCampaigns();
+    }
+  }, [program, clientLoading]);
+
+  return { campaigns, loading: loading || clientLoading, error, setCampaigns };
+}; 
