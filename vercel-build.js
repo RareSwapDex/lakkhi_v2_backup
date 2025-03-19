@@ -170,6 +170,15 @@ module.exports = nextConfig;
 // Continue with the normal Next.js build process
 console.log('Proceeding with Next.js build process...');
 
+// Run TypeScript dependency fix script
+try {
+  console.log('Running TypeScript dependency fix script...');
+  require('./fix-typescript-deps.js');
+} catch (error) {
+  console.error('Error running TypeScript dependency fix:', error);
+  // Continue with the build even if the fix fails
+}
+
 // This script doesn't need to do anything special for now
 // The actual build is handled by Next.js build
 process.exit(0); // Exit successfully 
